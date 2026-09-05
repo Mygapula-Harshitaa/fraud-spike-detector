@@ -18,6 +18,16 @@
         "total_attack_windows": 9,
         "windows_with_at_least_one_alert": 9,
         "window_detection_rate": 1.0
+      },
+      "cost": {
+        "cost_fp_assumed": 40.0,
+        "cost_fn_assumed": 500.0,
+        "cost_tp_review_assumed": 5.0,
+        "cost_from_false_positives": 122200.0,
+        "cost_from_false_negatives": 31500.0,
+        "cost_from_review": 3070.0,
+        "total_cost": 156770.0,
+        "n_flagged_for_review": 3669
       }
     },
     "stage_b_only": {
@@ -33,6 +43,16 @@
         "total_attack_windows": 9,
         "windows_with_at_least_one_alert": 9,
         "window_detection_rate": 1.0
+      },
+      "cost": {
+        "cost_fp_assumed": 40.0,
+        "cost_fn_assumed": 500.0,
+        "cost_tp_review_assumed": 5.0,
+        "cost_from_false_positives": 40.0,
+        "cost_from_false_negatives": 5000.0,
+        "cost_from_review": 3335.0,
+        "total_cost": 8375.0,
+        "n_flagged_for_review": 668
       }
     },
     "combined_or": {
@@ -48,6 +68,16 @@
         "total_attack_windows": 9,
         "windows_with_at_least_one_alert": 9,
         "window_detection_rate": 1.0
+      },
+      "cost": {
+        "cost_fp_assumed": 40.0,
+        "cost_fn_assumed": 500.0,
+        "cost_tp_review_assumed": 5.0,
+        "cost_from_false_positives": 122200.0,
+        "cost_from_false_negatives": 1500.0,
+        "cost_from_review": 3370.0,
+        "total_cost": 127070.0,
+        "n_flagged_for_review": 3729
       }
     },
     "combined_and": {
@@ -63,6 +93,16 @@
         "total_attack_windows": 9,
         "windows_with_at_least_one_alert": 9,
         "window_detection_rate": 1.0
+      },
+      "cost": {
+        "cost_fp_assumed": 40.0,
+        "cost_fn_assumed": 500.0,
+        "cost_tp_review_assumed": 5.0,
+        "cost_from_false_positives": 40.0,
+        "cost_from_false_negatives": 35000.0,
+        "cost_from_review": 3035.0,
+        "total_cost": 38075.0,
+        "n_flagged_for_review": 608
       }
     },
     "cascade": {
@@ -78,6 +118,16 @@
         "total_attack_windows": 9,
         "windows_with_at_least_one_alert": 9,
         "window_detection_rate": 1.0
+      },
+      "cost": {
+        "cost_fp_assumed": 40.0,
+        "cost_fn_assumed": 500.0,
+        "cost_tp_review_assumed": 5.0,
+        "cost_from_false_positives": 80.0,
+        "cost_from_false_negatives": 4000.0,
+        "cost_from_review": 3345.0,
+        "total_cost": 7425.0,
+        "n_flagged_for_review": 671
       }
     }
   }
