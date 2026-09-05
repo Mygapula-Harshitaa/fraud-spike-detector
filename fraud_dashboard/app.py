@@ -211,6 +211,82 @@ def confusion_bar(row: dict, title: str):
     return fig
 
 
+def render_fp_cost_section(strategy_metrics: dict, key_prefix: str, chart_title: str):
+    """Renders an interactive false-positive / false-negative cost analysis.
+
+    strategy_metrics: dict keyed by strategy name -> dict with at least "fp" and "fn" counts
+    (matches both metrics["strategies"][k]["transaction_level"] and compute_strategy_metrics output).
+    """
+    st.subheader("💰 False Positive Cost Analysis")
+    st.caption(
+        "Precision/recall alone don't say whether a strategy is actually *cheaper* to run — that "
+        "depends on how expensive a false alarm is relative to a missed fraud. Set your own cost "
+        "assumptions below to see the trade-off in dollar terms."
+    )
+
+    c1, c2 = st.columns(2)
+    fp_cost = c1.number_input(
+        "Cost per false positive ($)", min_value=0.0, value=5.0, step=0.5,
+        key=f"{key_prefix}_fp_cost",
+        help="Cost of a false alarm: analyst review time, customer friction from a declined/held "
+             "transaction, support contacts, churn risk, etc.",
+    )
+    fn_cost = c2.number_input(
+        "Cost per false negative ($)", min_value=0.0, value=100.0, step=10.0,
+        key=f"{key_prefix}_fn_cost",
+        help="Cost of a missed fraud: average fraud loss per undetected transaction, chargebacks, "
+             "reimbursement, etc.",
+    )
+
+    rows = []
+    for strat in STRATEGY_ORDER:
+        if strat not in strategy_metrics:
+            continue
+        m = strategy_metrics[strat]
+        fp_total = m["fp"] * fp_cost
+        fn_total = m["fn"] * fn_cost
+        rows.append({
+            "strategy": strat,
+            "label": STRATEGY_LABEL[strat],
+            "fp": m["fp"],
+            "fn": m["fn"],
+            "fp_cost": fp_total,
+            "fn_cost": fn_total,
+            "total_cost": fp_total + fn_total,
+        })
+    cost_df = pd.DataFrame(rows)
+
+    if cost_df.empty:
+        st.info("No strategy metrics available to cost out.")
+        return
+
+    best = cost_df.loc[cost_df["total_cost"].idxmin()]
+    worst = cost_df.loc[cost_df["total_cost"].idxmax()]
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Lowest-cost strategy", best["label"], f"${best['total_cost']:,.0f}")
+    k2.metric("Highest-cost strategy", worst["label"], f"${worst['total_cost']:,.0f}")
+    savings = worst["total_cost"] - best["total_cost"]
+    k3.metric("Spread (worst − best)", f"${savings:,.0f}")
+
+    fig = px.bar(
+        cost_df.melt(id_vars=["label"], value_vars=["fp_cost", "fn_cost"],
+                     var_name="cost_type", value_name="cost"),
+        x="label", y="cost", color="cost_type", barmode="stack", title=chart_title,
+        color_discrete_map={"fp_cost": "#e76f51", "fn_cost": "#e63946"},
+        labels={"cost_type": "cost source", "label": ""},
+    )
+    fig.for_each_trace(lambda t: t.update(name={"fp_cost": "False positive cost", "fn_cost": "False negative cost"}.get(t.name, t.name)))
+    fig.update_layout(xaxis_title="", yaxis_title="estimated cost ($)", legend_title="")
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.dataframe(
+        cost_df[["label", "fp", "fn", "fp_cost", "fn_cost", "total_cost"]]
+        .rename(columns={"label": "strategy"})
+        .style.format({"fp_cost": "${:,.0f}", "fn_cost": "${:,.0f}", "total_cost": "${:,.0f}"}),
+        use_container_width=True, hide_index=True,
+    )
+
+
 # ==========================================================================
 # Sidebar navigation
 # ==========================================================================
@@ -301,6 +377,12 @@ precision (0.997) while lifting recall close to Stage B's ceiling, at a fraction
 cost of `combined_or`/`combined_and`, since Stage B only ever scores the ~{:.0%} of traffic Stage A
 flags as a candidate.
         """.format(metrics["cascade_ratio"])
+    )
+
+    render_fp_cost_section(
+        {k: metrics["strategies"][k]["transaction_level"] for k in STRATEGY_ORDER},
+        key_prefix="synth",
+        chart_title="Estimated cost by strategy — synthetic benchmark",
     )
 
     with st.expander("Explore the raw synthetic feature data"):
@@ -433,6 +515,12 @@ Nothing is memorized between sessions — training happens on your machine when 
             use_container_width=True, hide_index=True,
         )
 
+        render_fp_cost_section(
+            strat_metrics,
+            key_prefix="kaggle",
+            chart_title="Estimated cost by strategy — Kaggle (real-world)",
+        )
+
         st.success(
             "If precision/recall on the real dataset stay in a broadly similar range to the synthetic "
             "benchmark — rather than collapsing toward zero — that's evidence the pipeline learned "
@@ -485,4 +573,3 @@ synthetic results.
   anywhere by this app.
         """
     )
-
