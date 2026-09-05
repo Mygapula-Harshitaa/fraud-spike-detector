@@ -74,6 +74,58 @@ def txn_level_metrics(y_true, y_pred) -> dict:
     return {"precision": float(precision), "recall": float(recall), "f1": float(f1), "tp": tp, "fp": fp, "fn": fn}
 
 
+# ---------------------------------------------------------------------------
+# Cost model
+# ---------------------------------------------------------------------------
+# Precision/recall treat every false positive and every false negative as
+# equally bad, which isn't true for a payments business. This assigns a
+# rupee cost to each outcome so strategies can be compared on money, not
+# just on an abstract score. The numbers below are documented ASSUMPTIONS,
+# not measured — they are exposed as CLI flags / dashboard sliders so anyone
+# reviewing this can substitute their own numbers and see how the ranking
+# changes.
+#
+#   cost_fp        - a legitimate transaction gets held/declined. Cost =
+#                     manual review effort + customer friction + the real
+#                     chance the customer abandons the purchase.
+#   cost_fn        - a card-testing transaction is missed. The transaction
+#                     itself is usually tiny (that's the point of card
+#                     testing), but letting it through is what lets the
+#                     attacker validate a stolen card, which enables a much
+#                     larger fraudulent purchase downstream, plus the
+#                     merchant/bank eventually eats a chargeback fee. We
+#                     price the miss at the downstream risk, not the ticket
+#                     size of the probe transaction itself.
+#   cost_tp_review - even a correct catch isn't free: someone (a rule
+#                     engine or an analyst) has to review/action the alert.
+DEFAULT_COST_FP = 40.0          # INR, per false positive
+DEFAULT_COST_FN = 500.0         # INR, per missed attack transaction
+DEFAULT_COST_TP_REVIEW = 5.0    # INR, per correctly caught transaction
+
+
+def cost_metrics(
+    tp: int,
+    fp: int,
+    fn: int,
+    cost_fp: float = DEFAULT_COST_FP,
+    cost_fn: float = DEFAULT_COST_FN,
+    cost_tp_review: float = DEFAULT_COST_TP_REVIEW,
+) -> dict:
+    """Turn a confusion matrix into a rupee cost, given per-outcome cost assumptions."""
+    total_cost = fp * cost_fp + fn * cost_fn + tp * cost_tp_review
+    n_flagged = tp + fp
+    return {
+        "cost_fp_assumed": cost_fp,
+        "cost_fn_assumed": cost_fn,
+        "cost_tp_review_assumed": cost_tp_review,
+        "cost_from_false_positives": fp * cost_fp,
+        "cost_from_false_negatives": fn * cost_fn,
+        "cost_from_review": tp * cost_tp_review,
+        "total_cost": total_cost,
+        "n_flagged_for_review": n_flagged,
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--txn_test", required=True, help="path to features_test_transaction.csv")
@@ -88,6 +140,12 @@ def main():
         help="fraction of Stage B's own threshold used as the lowered bar inside "
         "Stage-A-flagged minutes (default 0.4 = 40%% of the normal threshold)",
     )
+    ap.add_argument("--cost_fp", type=float, default=DEFAULT_COST_FP,
+                     help=f"INR cost per false positive (default {DEFAULT_COST_FP})")
+    ap.add_argument("--cost_fn", type=float, default=DEFAULT_COST_FN,
+                     help=f"INR cost per missed attack transaction (default {DEFAULT_COST_FN})")
+    ap.add_argument("--cost_tp_review", type=float, default=DEFAULT_COST_TP_REVIEW,
+                     help=f"INR cost to review/action a correct catch (default {DEFAULT_COST_TP_REVIEW})")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -164,7 +222,15 @@ def main():
         y_pred = merged[col].to_numpy()
         txn_metrics = txn_level_metrics(y_true, y_pred)
         window_metrics = window_level_detection_rate(merged, col)
-        results[name] = {"transaction_level": txn_metrics, "attack_window_level": window_metrics}
+        cost = cost_metrics(
+            txn_metrics["tp"], txn_metrics["fp"], txn_metrics["fn"],
+            cost_fp=args.cost_fp, cost_fn=args.cost_fn, cost_tp_review=args.cost_tp_review,
+        )
+        results[name] = {
+            "transaction_level": txn_metrics,
+            "attack_window_level": window_metrics,
+            "cost": cost,
+        }
 
     metrics = {
         "stage_b_threshold": float(b_threshold),
@@ -195,6 +261,13 @@ def main():
             if w["window_detection_rate"] is not None:
                 f.write(f"  Attack-window detection rate: {w['window_detection_rate']:.4f} "
                          f"({w['windows_with_at_least_one_alert']}/{w['total_attack_windows']})\n")
+            c = r["cost"]
+            f.write(f"  Estimated cost: Rs.{c['total_cost']:,.0f} total "
+                     f"(FP cost Rs.{c['cost_from_false_positives']:,.0f} + "
+                     f"FN cost Rs.{c['cost_from_false_negatives']:,.0f} + "
+                     f"review cost Rs.{c['cost_from_review']:,.0f}) "
+                     f"[assumes Rs.{c['cost_fp_assumed']:.0f}/FP, Rs.{c['cost_fn_assumed']:.0f}/FN, "
+                     f"Rs.{c['cost_tp_review_assumed']:.0f}/review]\n")
             f.write("\n")
 
     print(f"Saved metrics to {metrics_path} and {metrics_txt_path}")
@@ -240,15 +313,35 @@ def main():
     plt.close()
     print(f"Saved window detection comparison plot to {window_cmp_path}")
 
+    # ---- Cost comparison plot ----
+    costs = [results[n]["cost"]["total_cost"] for n in names]
+    plt.figure(figsize=(8, 5))
+    bars = plt.bar(names, costs, color="#e76f51")
+    plt.ylabel("Estimated total cost (Rs.)")
+    plt.title(
+        f"Estimated cost by strategy (Rs.{args.cost_fp:.0f}/FP, Rs.{args.cost_fn:.0f}/FN, "
+        f"Rs.{args.cost_tp_review:.0f}/review)"
+    )
+    plt.xticks(rotation=20)
+    for b, c in zip(bars, costs):
+        plt.text(b.get_x() + b.get_width() / 2, c, f"Rs.{c:,.0f}", ha="center", va="bottom")
+    plt.tight_layout()
+    cost_cmp_path = os.path.join(args.out, "cost_comparison.png")
+    plt.savefig(cost_cmp_path, dpi=150)
+    plt.close()
+    print(f"Saved cost comparison plot to {cost_cmp_path}")
+
     print("\nDone. Summary:")
     for name in names:
         t = results[name]["transaction_level"]
         w = results[name]["attack_window_level"]
+        c = results[name]["cost"]
         wr = w["window_detection_rate"]
         wr_str = f"{wr:.4f}" if wr is not None else "n/a"
         print(f"  {name:16s} precision={t['precision']:.3f} recall={t['recall']:.3f} "
-              f"f1={t['f1']:.3f} | window_detect={wr_str}")
+              f"f1={t['f1']:.3f} | window_detect={wr_str} | cost=Rs.{c['total_cost']:,.0f}")
 
 
 if __name__ == "__main__":
     main()
+  
