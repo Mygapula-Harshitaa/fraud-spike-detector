@@ -1,0 +1,84 @@
+{
+  "stage_b_threshold": 0.9528502821922302,
+  "cascade_threshold": 0.3811401128768921,
+  "cascade_ratio": 0.4,
+  "n_test_transactions": 129251,
+  "n_test_attack_transactions": 677,
+  "strategies": {
+    "stage_a_only": {
+      "transaction_level": {
+        "precision": 0.16734805124011992,
+        "recall": 0.9069423929098966,
+        "f1": 0.2825586746433502,
+        "tp": 614,
+        "fp": 3055,
+        "fn": 63
+      },
+      "attack_window_level": {
+        "total_attack_windows": 9,
+        "windows_with_at_least_one_alert": 9,
+        "window_detection_rate": 1.0
+      }
+    },
+    "stage_b_only": {
+      "transaction_level": {
+        "precision": 0.9985029940119761,
+        "recall": 0.9852289512555391,
+        "f1": 0.9918215613382899,
+        "tp": 667,
+        "fp": 1,
+        "fn": 10
+      },
+      "attack_window_level": {
+        "total_attack_windows": 9,
+        "windows_with_at_least_one_alert": 9,
+        "window_detection_rate": 1.0
+      }
+    },
+    "combined_or": {
+      "transaction_level": {
+        "precision": 0.1807455081791365,
+        "recall": 0.9955686853766618,
+        "f1": 0.3059464366772583,
+        "tp": 674,
+        "fp": 3055,
+        "fn": 3
+      },
+      "attack_window_level": {
+        "total_attack_windows": 9,
+        "windows_with_at_least_one_alert": 9,
+        "window_detection_rate": 1.0
+      }
+    },
+    "combined_and": {
+      "transaction_level": {
+        "precision": 0.9983552631578947,
+        "recall": 0.896602658788774,
+        "f1": 0.9447470817120622,
+        "tp": 607,
+        "fp": 1,
+        "fn": 70
+      },
+      "attack_window_level": {
+        "total_attack_windows": 9,
+        "windows_with_at_least_one_alert": 9,
+        "window_detection_rate": 1.0
+      }
+    },
+    "cascade": {
+      "transaction_level": {
+        "precision": 0.9970193740685543,
+        "recall": 0.9881831610044313,
+        "f1": 0.9925816023738873,
+        "tp": 669,
+        "fp": 2,
+        "fn": 8
+      },
+      "attack_window_level": {
+        "total_attack_windows": 9,
+        "windows_with_at_least_one_alert": 9,
+        "window_detection_rate": 1.0
+      }
+    }
+  }
+}
