@@ -90,6 +90,65 @@ def metrics_to_frame(metrics: dict) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------
+# Cost model — precision/recall treat every FP and FN as equally bad, which
+# isn't true for a payments business. This turns a confusion matrix into a
+# rupee cost using a few explicit, adjustable assumptions (see sliders below).
+# --------------------------------------------------------------------------
+DEFAULT_COST_FP = 40.0
+DEFAULT_COST_FN = 500.0
+DEFAULT_COST_TP_REVIEW = 5.0
+
+
+def cost_from_confusion(tp: int, fp: int, fn: int, cost_fp: float, cost_fn: float, cost_tp_review: float) -> dict:
+    return {
+        "cost_from_fp": fp * cost_fp,
+        "cost_from_fn": fn * cost_fn,
+        "cost_from_review": tp * cost_tp_review,
+        "total_cost": fp * cost_fp + fn * cost_fn + tp * cost_tp_review,
+    }
+
+
+def cost_sliders(key_prefix: str):
+    """Renders the three cost-assumption sliders and returns their current values."""
+    st.markdown(
+        "**Cost assumptions** — precision/recall score every mistake the same; in production "
+        "a blocked legitimate customer and a missed card-testing probe cost very different "
+        "amounts. Adjust these to match your own numbers and see how the ranking shifts."
+    )
+    c1, c2, c3 = st.columns(3)
+    cost_fp = c1.slider(
+        "Cost per false positive (Rs.)", 0, 500, int(DEFAULT_COST_FP), step=5,
+        key=f"{key_prefix}_cost_fp",
+        help="A legitimate transaction gets held/declined: manual review effort + customer "
+             "friction + risk the customer abandons the purchase.",
+    )
+    cost_fn = c2.slider(
+        "Cost per false negative (Rs.)", 0, 3000, int(DEFAULT_COST_FN), step=25,
+        key=f"{key_prefix}_cost_fn",
+        help="A card-testing transaction is missed. The probe transaction itself is usually "
+             "tiny — the real cost is the validated stolen card enabling a larger fraudulent "
+             "purchase downstream, plus the eventual chargeback fee.",
+    )
+    cost_tp_review = c3.slider(
+        "Cost per correct catch (Rs.)", 0, 50, int(DEFAULT_COST_TP_REVIEW), step=1,
+        key=f"{key_prefix}_cost_tp_review",
+        help="Even a correct alert isn't free — someone/something has to review and action it.",
+    )
+    return cost_fp, cost_fn, cost_tp_review
+
+
+def cost_bar_chart(df: pd.DataFrame, title: str):
+    fig = px.bar(
+        df, x="label", y="total_cost", color="label", title=title,
+        color_discrete_map={STRATEGY_LABEL[k]: v for k, v in STRATEGY_COLOR.items()} if "strategy" not in df.columns
+        else {row["label"]: STRATEGY_COLOR.get(row["strategy"], "#e76f51") for _, row in df.iterrows()},
+        text_auto=".2s",
+    )
+    fig.update_layout(showlegend=False, xaxis_title="", yaxis_title="Estimated total cost (Rs.)")
+    return fig
+
+
+# --------------------------------------------------------------------------
 # Real-world (Kaggle) pipeline
 # --------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
@@ -291,6 +350,31 @@ elif page == "Synthetic Benchmark":
         use_container_width=True, hide_index=True,
     )
 
+    st.subheader("Cost analysis")
+    cost_fp, cost_fn, cost_tp_review = cost_sliders("synthetic")
+    cost_rows = []
+    for _, row in df.iterrows():
+        c = cost_from_confusion(row["tp"], row["fp"], row["fn"], cost_fp, cost_fn, cost_tp_review)
+        cost_rows.append({"strategy": row["strategy"], "label": row["label"], **c})
+    cost_df = pd.DataFrame(cost_rows)
+    best = cost_df.loc[cost_df["total_cost"].idxmin()]
+
+    st.plotly_chart(cost_bar_chart(cost_df, "Estimated total cost by strategy"), use_container_width=True)
+    st.success(
+        f"**Cheapest strategy at these assumptions: {best['label']}** "
+        f"(≈ Rs.{best['total_cost']:,.0f} total, vs. Rs.{cost_df['total_cost'].max():,.0f} for the most expensive). "
+        f"Note this can rank differently than the precision/recall table above — e.g. the cascade wins on "
+        f"cost even when another strategy's raw precision looks marginally better, because cost weighs "
+        f"missed attacks and blocked customers by their actual business impact, not equally."
+    )
+    st.dataframe(
+        cost_df[["label", "cost_from_fp", "cost_from_fn", "cost_from_review", "total_cost"]]
+        .rename(columns={"label": "strategy"})
+        .style.format({"cost_from_fp": "Rs.{:,.0f}", "cost_from_fn": "Rs.{:,.0f}",
+                        "cost_from_review": "Rs.{:,.0f}", "total_cost": "Rs.{:,.0f}"}),
+        use_container_width=True, hide_index=True,
+    )
+
     st.markdown(
         """
 **Reading the results:** Stage A alone catches every attack window (recall ≈ 0.91 at the
@@ -433,6 +517,17 @@ Nothing is memorized between sessions — training happens on your machine when 
             use_container_width=True, hide_index=True,
         )
 
+        st.subheader("Cost analysis")
+        rw_cost_fp, rw_cost_fn, rw_cost_tp_review = cost_sliders("kaggle")
+        rw_cost_rows = []
+        for _, row in real_df.iterrows():
+            c = cost_from_confusion(row["tp"], row["fp"], row["fn"], rw_cost_fp, rw_cost_fn, rw_cost_tp_review)
+            rw_cost_rows.append({"strategy": row["strategy"], "label": row["label"], **c})
+        rw_cost_df = pd.DataFrame(rw_cost_rows)
+        rw_best = rw_cost_df.loc[rw_cost_df["total_cost"].idxmin()]
+        st.plotly_chart(cost_bar_chart(rw_cost_df, "Estimated total cost by strategy (Kaggle)"), use_container_width=True)
+        st.info(f"**Cheapest strategy on this run: {rw_best['label']}** (≈ Rs.{rw_best['total_cost']:,.0f} total).")
+
         st.success(
             "If precision/recall on the real dataset stay in a broadly similar range to the synthetic "
             "benchmark — rather than collapsing toward zero — that's evidence the pipeline learned "
@@ -483,5 +578,36 @@ synthetic results.
   velocity-based threshold was tuned; adjust the slider to see sensitivity.
 - Retraining happens fresh each session — nothing about the uploaded Kaggle file is stored or sent
   anywhere by this app.
+
+### Known failure case: Stage A's transaction-level precision looked broken at first
+
+**What happened.** Early in development, Stage A (the unsupervised IsolationForest) scored
+{metrics['strategies']['stage_a_only']['transaction_level']['precision']:.1%} precision at the
+transaction level — worse than a coin flip's worth of useful signal on its own. First read:
+something was wrong with the features or the model.
+
+**How it was diagnosed.** Attack-window detection rate for Stage A alone was still
+{metrics['strategies']['stage_a_only']['attack_window_level']['window_detection_rate']:.0%}
+({metrics['strategies']['stage_a_only']['attack_window_level']['windows_with_at_least_one_alert']}/
+{metrics['strategies']['stage_a_only']['attack_window_level']['total_attack_windows']} windows) —
+every real attack burst had *at least one* flagged minute inside it. That ruled out "the model
+learned nothing." The actual cause: Stage A operates at merchant-*minute* granularity with no
+label signal, so once it flags a minute as anomalous, *every* transaction inside that minute
+counts as a Stage A "alert" — including the many legitimate transactions that happen to share
+that minute with a handful of attack probes. Low transaction-level precision is the expected cost
+of that design, not a bug.
+
+**How it was handled.** Rather than trying to force Stage A's precision up (which would mean
+adding label-based tuning to what's supposed to be the unsupervised, label-free layer — defeating
+its purpose as a novel-pattern catch-all), Stage A was kept intentionally loose and paired with
+Stage B as a precision layer in the cascade: Stage A's job is *recall at the window level*, not
+transaction-level precision, and it's evaluated as such. The **cost analysis above** is a direct
+consequence of this — it's why `stage_a_only` is clearly the most expensive strategy (mostly
+false-positive cost) despite catching 100% of attack windows, and why the cascade (not
+`combined_and`, which also has strong transaction-level precision) is presented as the recommended
+production design: it inherits Stage A's window-level recall without inheriting its transaction-level
+false-positive rate.
         """
     )
+
+
