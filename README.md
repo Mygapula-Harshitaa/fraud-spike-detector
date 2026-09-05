@@ -17,6 +17,47 @@ A two-stage anomaly detection pipeline for **card-testing attacks** — bursts o
 | **Stage B** | Supervised | `XGBoost` classifier | Per-transaction features (amount z-score vs. merchant history, time-since-last-txn per device/IP, decline rate, hour, method) | Learned fraud signatures — high precision, but blind to genuinely novel patterns |
 | **Cascade** | Combined | — | Stage A's flagged candidates get a *lowered* Stage B threshold (`cascade_ratio × stage_b_threshold`); everything else still needs Stage B's normal, higher bar | Stage A's broad recall + Stage B's precision, without running the expensive model on 100% of traffic |
 
+## Architecture walkthrough
+
+```
+                         incoming transaction
+                                 │
+                                 ▼
+                 ┌───────────────────────────────┐
+                 │  build_features.py             │
+                 │  causal feature engineering    │
+                 │  (rolling windows, no lookahead)│
+                 └───────────────┬─────────────────┘
+                                 │
+              ┌──────────────────┴───────────────────┐
+              ▼                                       ▼
+  ┌────────────────────────────┐        ┌───────────────────────────┐
+  │ STAGE A — IsolationForest   │        │ (per-transaction features  │
+  │ merchant × minute aggregates│        │  held for Stage B)         │
+  │ unsupervised, no labels     │        └─────────────┬───────────────┘
+  └──────────────┬───────────────┘                      │
+                 │                                       │
+        flagged? ┴── yes ──────────┐                     │
+                 │                 ▼                     │
+                 no          lowered Stage B         normal Stage B
+                 │            threshold               threshold
+                 │        (cascade_ratio × t)             (t)
+                 │                 │                       │
+                 └─────────────────┴───────────┬───────────┘
+                                                ▼
+                                  ┌───────────────────────────┐
+                                  │ STAGE B — XGBoost           │
+                                  │ transaction-level classifier│
+                                  │ supervised, precision-tuned │
+                                  └─────────────┬─────────────┘
+                                                ▼
+                                     alert / no alert
+                                (flag for human review only —
+                                 no automatic blocking action)
+```
+
+Stage A runs on **100% of traffic** cheaply; Stage B only scores the fraction Stage A already flagged as suspicious, at a lowered bar — everything else still has to clear Stage B's normal, stricter threshold on its own. This is what keeps the cascade's precision close to Stage B alone while lifting recall toward Stage A's ceiling, without paying Stage B's cost on every transaction. See `combine_stages.py` for the exact threshold logic.
+
 ## Scope
 
 Strictly defense-only. This system flags and reports suspected card-testing activity for human/downstream review; it has no capability to block, execute, or otherwise act on live transactions.
@@ -55,6 +96,8 @@ fraud-spike-detector/
 - `cascade` — the recommended design (see table above)
 
 Results on the held-out synthetic test set (129,251 transactions, 677 attack transactions across 9 attack windows):
+
+**The split is temporal, not random:** `generate_data.py`'s `time_based_split` cuts by time — the test set is always the most recent slice of traffic, never a random shuffle. For a fraud/temporal problem this matters: a random split would let the model see transactions from *after* an attack window in training and evaluate on transactions from *before* it, which quietly leaks future information into training and inflates every metric below. The numbers here reflect what the model would actually see in production — trained on the past, evaluated on data strictly after it.
 
 | Strategy | Precision | Recall | F1 | TP | FP | FN | Attack windows caught |
 |---|---|---|---|---|---|---|---|
